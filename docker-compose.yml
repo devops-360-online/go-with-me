@@ -1,0 +1,54 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - redis
+      - kafka
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DATABASE=go_with_me_chat
+      - DB_NAME=go_with_me
+      - DB_USER=root
+      - DB_PASSWORD=postgres
+      - DB_HOST=db          # Added
+      - DB_PORT=5432        # Added
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BROKERS=kafka:9092
+      - SERVER_PORT=8080
+      - GIN_MODE=debug
+  db:
+    image: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: go_with_me
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+  zookeeper:
+    image: wurstmeister/zookeeper
+  kafka:
+    image: wurstmeister/kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ADVERTISED_HOST_NAME: kafka
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    depends_on:
+      - zookeeper
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/mongo:/data/db
