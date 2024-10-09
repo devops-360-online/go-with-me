@@ -9,12 +9,12 @@ import (
 )
 
 type User struct {
-    ID        uint      `gorm:"primaryKey"`
-    Name      string    `gorm:"size:255;not null"`
-    Email     string    `gorm:"uniqueIndex;size:255;not null"`
-    Password  string    `gorm:"size:255;not null"`
-    CreatedAt time.Time
-    UpdatedAt time.Time
+    ID        uint      `gorm:"primaryKey" json:"id"`
+    Name      string    `gorm:"size:255;not null" json:"name"`
+    Email     string    `gorm:"uniqueIndex;size:255;not null" json:"email"`
+    Password  string    `gorm:"size:255;not null" json:"-"` 
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
 }
 
 func GetUserByEmail(db *gorm.DB, email string) (*User, error) {

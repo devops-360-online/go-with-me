@@ -61,6 +61,7 @@ func main() {
         auth.GET("/events", handlers.ListEventsHandler)
         auth.GET("/events/:id", handlers.GetEventHandler)
         auth.POST("/events/:id/join", handlers.JoinEventHandler)
+        auth.DELETE("/events/:id/join", handlers.UnjoinEventHandler) 
         auth.GET("/ws/events/:id", func(c *gin.Context) {
             handlers.EventChatHandler(c)
         })
