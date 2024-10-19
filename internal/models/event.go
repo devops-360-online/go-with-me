@@ -9,6 +9,7 @@ type Event struct {
     Date        time.Time `gorm:"not null"`
     Description string    `gorm:"type:text"`
     CreatorID   uint      `gorm:"not null"`
+    FileURL     string    `gorm:"size:255" json:"file_url"` 
     CreatedAt   time.Time
     UpdatedAt   time.Time
     // Associations

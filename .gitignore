@@ -1,2 +1,5 @@
 .env
 data/*
+*_data/*
+ente/*data
+ente/custom-logs

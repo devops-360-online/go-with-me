@@ -1,0 +1,198 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+      - redis
+      - kafka
+      - mongo
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DATABASE=go_with_me_chat
+      - DB_NAME=go_with_me
+      - DB_USER=root
+      - DB_PASSWORD=postgres
+      - DB_HOST=db
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KAFKA_BROKERS=kafka:9092
+      - SERVER_PORT=8080
+      - GIN_MODE=debug
+  
+  db:
+    image: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: go_with_me
+    ports:
+      - "5432:5432"
+  redis:
+    image: redis
+    ports:
+      - "6379:6379"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 2@kafka-controller:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: 'q1Sh-9_ISia_zwGINzRvyQ'
+    depends_on:
+      - controller
+
+  controller:
+    image: confluentinc/cp-kafka:7.7.1
+    hostname: kafka-controller 
+    environment:
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_NODE_ID: 2
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 2@kafka-controller:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: 'q1Sh-9_ISia_zwGINzRvyQ'
+    ports:
+      - "9093:9093"
+
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./data/mongo:/data/db
+
+  localstack:
+    image: localstack/localstack
+    container_name: localstack
+    ports:
+      - "4566:4566"   # Expose LocalStack endpoint for all services (including S3)
+      - "4571:4571"
+    environment:
+      - SERVICES=s3    # Activate S3 service
+      - DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    command: >
+      /bin/sh -c "localstack start & awslocal s3 mb s3://go-with-me-images && tail -f /dev/null"
+
+  
+  museum:
+    # Uncomment below if you prefer to build
+    #build:
+      #context: .
+      #args:
+        #GIT_COMMIT: development-cluster
+    image: ghcr.io/ente-io/server
+    # ports:
+    #  - 8081:8080 # API
+    #  - 2112:2112 # Prometheus metrics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Pass-in the config to connect to the DB and MinIO
+      ENTE_CREDENTIALS_FILE: /credentials.yaml
+     # ENTE_CLI_SECRETS_PATH: /cli-data/secret.txt
+     # ENTE_CLI_CONFIG_PATH: /cli-data/
+    volumes:
+      - ./ente/custom-logs:/var/logs
+      - ./ente/museum.yaml:/museum.yaml:ro
+      - ./ente/scripts/compose/credentials.yaml:/credentials.yaml:ro
+      #- /home/ubuntu/docker/ente/cli-data:/cli-data
+     # - /home/ubuntu/docker/ente/exports/ente-photos:/exports
+      - ./ente/data:/data:ro
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD",
+    #       "echo",
+    #       "1"
+    #     ]
+    networks:
+      - ente
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.ente.entrypoints=http"
+      - "traefik.http.routers.ente.rule=Host(`localhost`)"
+      - "traefik.http.routers.ente-secure.rule=Host(`localhost`)"
+      - "traefik.http.routers.ente-secure.service=ente"
+      - "traefik.http.services.ente.loadbalancer.server.port=8080" # make sure the loadbalancer is the last line!!!
+      # Configure CORS middleware if needed
+      - "traefik.http.middlewares.ente-secure-cors.headers.accesscontrolallowmethods=GET,HEAD,POST,PUT,DELETE"
+      - "traefik.http.middlewares.ente-secure-cors.headers.accesscontrolallowheaders=*"
+      - "traefik.http.middlewares.ente-secure-cors.headers.accesscontrolalloworiginlist=http://localhost"  # Add other origins if needed
+      - "traefik.http.middlewares.ente-secure-cors.headers.accesscontrolmaxage=3000"
+      - "traefik.http.middlewares.ente-secure-cors.headers.accessControlExposeHeaders=ETag"
+      - "traefik.http.middlewares.ente-secure-cors.headers.addvaryheader=true"
+      - "traefik.http.routers.ente-secure.middlewares=ente-secure-cors"
+
+  traefik:
+    image: traefik:v2.10  # You can replace this with the latest version
+    container_name: traefik
+    command:
+      - "--api.insecure=true" # Enables the Traefik dashboard (disable this in production)
+      - "--providers.docker=true"
+      - "--entrypoints.http.address=:80"
+    ports:
+      - "8081:80"
+    depends_on:
+      - museum
+      # museum:
+      #   condition: service_healthy
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"  # Allows Traefik to interact with Docker
+    networks:
+      - ente
+      - proxy
+
+  postgres:
+    image: postgres
+    ports:
+      - 5433:5432
+    environment:
+      POSTGRES_USER: pguser
+      POSTGRES_PASSWORD: pgpass
+      POSTGRES_DB: ente_db
+    # Wait for postgres to be accept connections before starting museum.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-q",
+          "-d",
+          "ente_db",
+          "-U",
+          "pguser"
+        ]
+      start_period: 40s
+      start_interval: 1s
+    volumes:
+      - ./ente/postgres-data:/var/lib/postgresql/data
+    networks:
+      - ente
+
+networks:
+  ente:
+  proxy:
+    external: true
+  default:
+    driver: bridge

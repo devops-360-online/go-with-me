@@ -1,0 +1,47 @@
+# HTTP connection parameters
+http:
+    # If true, bind to 443 and use TLS.
+    # By default, this is false, and museum will bind to 8080 without TLS.
+    # use-tls: true
+
+# Specify the base endpoints for various apps
+apps:
+    # Default is https://albums.ente.io
+    #
+    # If you're running a self hosted instance and wish to serve public links,
+    # set this to the URL where your albums web app is running.
+    public-albums: http://localhost
+
+# SMTP configuration (optional)
+#
+# Configure credentials here for sending mails from museum (e.g. OTP emails).
+#
+# The smtp credentials will be used if the host is specified. Otherwise it will
+# try to use the transmail credentials. Ideally, one of smtp or transmail should
+# be configured for a production instance.
+#
+# username and password are optional (e.g. if you're using a local relay server
+# and don't need authentication).
+#smtp:
+#    host:
+#    port:
+#    username:
+#    password:
+#    # The email address from which to send the email. Set this to an email
+#    # address whose credentials you're providing.
+#    email:
+
+s3:
+  are_local_buckets: true   # Since you're using LocalStack locally
+  use_path_style_urls: true # LocalStack requires path-style URLs
+  go-with-me-images:
+    key: test                # LocalStack accepts these test credentials
+    secret: testtest
+    endpoint: http://localhost:4566   # LocalStack S3 endpoint
+    region: us-east-1          # Dummy region, required by AWS SDK
+    bucket: go-with-me-images  # Your LocalStack S3 bucket
+        
+# Add this once you have done the CLI part
+#internal:
+#    admins:
+#        - 1580559962386438
