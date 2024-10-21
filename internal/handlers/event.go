@@ -1,17 +1,17 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"path/filepath"
 
 	jwt "github.com/appleboy/gin-jwt/v2"
 	"github.com/aws/aws-sdk-go/aws"
@@ -22,6 +22,8 @@ import (
 	"github.com/devops-360-online/go-with-me/internal/middlewares"
 	"github.com/devops-360-online/go-with-me/internal/models"
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"gorm.io/gorm"
 )
 
@@ -71,21 +73,40 @@ func GetEventHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, event)
 }
 
-func UploadFileToS3(cfg *config.Config, file multipart.File, fileHeader *multipart.FileHeader, eventID uint, eventName string) (string, error) {
+// UploadFileToS3 uploads a file to S3 (or LocalStack in your case)
+func UploadFileToS3(ctx context.Context, cfg *config.Config, file multipart.File, fileHeader *multipart.FileHeader, eventID uint, eventName string) (string, error) {
+	tracer := otel.Tracer("event-service") // Get the tracer
+	ctx, span := tracer.Start(ctx, "UploadFileToS3") // Start a new span for the S3 upload process
+	defer span.End() // End the span when the function completes
 
+	// Log the event and file details for tracing
+	span.SetAttributes(
+		attribute.String("event.name", eventName),
+		attribute.String("file.original_name", fileHeader.Filename),
+		attribute.Int("event.id", int(eventID)),
+	)
+
+	// Get the S3 endpoint from the environment (default to LocalStack if available)
 	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
 	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
+		span.RecordError(fmt.Errorf("file type not allowed")) // Record error in the trace
 		return "", errors.New("file type not allowed: only PNG, JPEG files are accepted")
 	}
 
-	// Create a new AWS session using credentials from config
+	// Trace session creation
+	_, sessSpan := tracer.Start(ctx, "CreateS3Session") // Start a span for session creation
 	sess, err := session.NewSession(&aws.Config{
-		Region:      aws.String(cfg.S3Region),
-		Credentials: credentials.NewStaticCredentials(cfg.AwsAccessKeyID, cfg.AwsSecretAccessKey, ""),
+		Region:           aws.String(cfg.S3Region),
+		Credentials:      credentials.NewStaticCredentials(cfg.AwsAccessKeyID, cfg.AwsSecretAccessKey, ""),
+		Endpoint:         aws.String(cfg.S3Endpoint), // Use the custom endpoint for LocalStack or AWS
+		S3ForcePathStyle: aws.Bool(true),             // Force path-style URLs for LocalStack compatibility
 	})
 	if err != nil {
+		sessSpan.RecordError(err) // Record error in trace
+		sessSpan.End()            // End span
 		return "", err
 	}
+	sessSpan.End() // End the span for session creation
 
 	// Create a new S3 client
 	s3Client := s3.New(sess)
@@ -96,13 +117,16 @@ func UploadFileToS3(cfg *config.Config, file multipart.File, fileHeader *multipa
 	// Generate a random string for uniqueness
 	randomStr, err := generateRandomString(8) // 8-byte random string (16 characters hex)
 	if err != nil {
+		span.RecordError(err) // Record error in the trace
 		return "", err
 	}
 
 	// Generate a unique S3 key (path) using the event name, event ID, and random string
 	fileName := fmt.Sprintf("events/%s-%d/%d-%s-%s%s", cleanedEventName, eventID, time.Now().Unix(), randomStr, fileHeader.Filename, ext)
+	span.SetAttributes(attribute.String("file.s3_key", fileName)) // Add S3 key to the trace
 
-	// Upload file to S3
+	// Upload file to S3 and trace the process
+	_, uploadSpan := tracer.Start(ctx, "UploadFileToS3") // Start a span for file upload
 	_, err = s3Client.PutObject(&s3.PutObjectInput{
 		Bucket: aws.String(cfg.S3BucketNameEvents),
 		Key:    aws.String(fileName), // The key includes the folder path for the event
@@ -110,61 +134,112 @@ func UploadFileToS3(cfg *config.Config, file multipart.File, fileHeader *multipa
 		ACL:    aws.String("public-read"), // Make the file publicly readable
 	})
 	if err != nil {
+		uploadSpan.RecordError(err) // Record error in the trace
+		uploadSpan.End()            // End the upload span
 		return "", err
 	}
+	uploadSpan.End() // End the span for the upload operation
 
-	// Return the S3 file URL
-	fileURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.S3BucketNameEvents, cfg.S3Region, fileName)
+	// Generate dynamic file URL based on whether you're using LocalStack or AWS
+	var fileURL string
+	if cfg.S3Endpoint != "" {
+		// For LocalStack, generate the URL using localhost and bucket name in the path
+		fileURL = fmt.Sprintf("http://localhost:4566/%s/%s", cfg.S3BucketNameEvents, fileName)
+		span.SetAttributes(attribute.String("file.localstack_url", fileURL)) // Add the file URL to the trace
+	} else {
+		// For AWS, use the standard S3 URL format
+		fileURL = fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.S3BucketNameEvents, cfg.S3Region, fileName)
+		span.SetAttributes(attribute.String("file.aws_url", fileURL)) // Add the file URL to the trace
+	}
+
 	return fileURL, nil
 }
 
 func CreateEventHandler(c *gin.Context) {
-	var event models.Event
+    tracer := otel.Tracer("event-service") // Get the tracer
+    ctx, span := tracer.Start(c.Request.Context(), "CreateEventHandler")
+    defer span.End() // End the span when the function completes
 
-	// Bind JSON to event struct
-	if err := c.ShouldBindJSON(&event); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+    // Extract the form fields
+    event := models.Event{
+        Name:        c.PostForm("name"),
+        Location:    c.PostForm("location"),
+        Description: c.PostForm("description"),
+    }
 
-	// Extract user ID from JWT claims
-	claims := jwt.ExtractClaims(c)
-	userID := uint(claims[middlewares.IdentityKey].(float64))
-	event.CreatorID = userID
-	event.CreatedAt = time.Now()
-	event.UpdatedAt = time.Now()
+    // Parse the date field (check for empty and handle date-only formats)
+    dateStr := c.PostForm("date")
+    if dateStr == "" {
+        span.RecordError(fmt.Errorf("Date field cannot be empty"))
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Date field cannot be empty"})
+        return
+    }
 
-	// Retrieve the config from the context
-	cfg := c.MustGet("config").(*config.Config)
+    // Try to parse the full RFC3339 format first, fallback to date-only format
+    eventDate, err := time.Parse(time.RFC3339, dateStr)
+    if err != nil {
+        // Fallback to parsing just the date (YYYY-MM-DD)
+        eventDate, err = time.Parse("2006-01-02", dateStr)
+        if err != nil {
+            span.RecordError(err) // Trace the error
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format. Expected formats: YYYY-MM-DD or RFC3339"})
+            return
+        }
+    }
+    event.Date = eventDate
 
-	// Retrieve the file from the request
-	file, fileHeader, err := c.Request.FormFile("file")
-	if err != nil && err != http.ErrMissingFile {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to retrieve file: " + err.Error()})
-		return
-	}
+    // Extract user ID from JWT claims
+    claims := jwt.ExtractClaims(c)
+    userID := uint(claims[middlewares.IdentityKey].(float64))
+    event.CreatorID = userID
+    event.CreatedAt = time.Now()
+    event.UpdatedAt = time.Now()
 
-	// If a file is uploaded, upload it to S3 using the config
-	var fileURL string
-	if file != nil {
-		fileURL, err = UploadFileToS3(cfg, file, fileHeader, userID, event.Name)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to S3: " + err.Error()})
-			return
-		}
-		// Save the file URL in the event model
-		event.FileURL = fileURL
-	}
+    // Handle the file upload
+    file, fileHeader, err := c.Request.FormFile("file")
+    if err != nil && err != http.ErrMissingFile {
+        span.RecordError(err) // Trace the error
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to retrieve file: " + err.Error()})
+        return
+    }
 
-	// Save the event to the database
-	db := c.MustGet("db").(*gorm.DB)
-	if err := db.Create(&event).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create event"})
-		return
-	}
+    // If a file is uploaded, process it (e.g., upload it to S3)
+    if file != nil {
+        cfg := c.MustGet("config").(*config.Config)
+        fileURL, err := UploadFileToS3(ctx, cfg, file, fileHeader, event.ID, event.Name) // Pass context for tracing
+        if err != nil {
+            span.RecordError(err) // Trace the error
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to S3: " + err.Error()})
+            return
+        }
+        event.FileURL = fileURL
+        // Add file-related attributes to the trace
+        span.SetAttributes(
+            attribute.String("file.name", fileHeader.Filename),
+            attribute.String("file.url", fileURL),
+        )
+    }
 
-	// Respond with the created event
-	c.JSON(http.StatusCreated, event)
+    // Trace the database operation of saving the event
+    db := c.MustGet("db").(*gorm.DB)
+    _, dbSpan := tracer.Start(ctx, "DB_SaveEvent") // Start a span for the DB operation
+    if err := db.Create(&event).Error; err != nil {
+        dbSpan.RecordError(err) // Trace the error
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create event"})
+        dbSpan.End() // End the DB span
+        return
+    }
+    dbSpan.End() // End the DB span
+
+    // Add event-related attributes to the span
+    span.SetAttributes(
+        attribute.String("event.name", event.Name),
+        attribute.Int("event.id", int(event.ID)),
+        attribute.String("event.location", event.Location),
+    )
+
+    // Respond with the created event
+    c.JSON(http.StatusCreated, event)
 }
 
 func JoinEventHandler(c *gin.Context) {

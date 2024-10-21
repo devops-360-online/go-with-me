@@ -1,93 +1,110 @@
 package main
 
 import (
-    "log"
+	"context"
+	"log"
 
-    "github.com/gin-gonic/gin"
-    //jwt "github.com/appleboy/gin-jwt/v2"
-    "github.com/devops-360-online/go-with-me/config"
-    "github.com/devops-360-online/go-with-me/internal/handlers"
-    "github.com/devops-360-online/go-with-me/internal/middlewares"
-    "github.com/devops-360-online/go-with-me/internal/models"
-    "github.com/devops-360-online/go-with-me/internal/repositories"
-    "github.com/devops-360-online/go-with-me/internal/websockets"
-    //"gorm.io/gorm"
+	"github.com/gin-gonic/gin"
+	//jwt "github.com/appleboy/gin-jwt/v2"
+	"github.com/devops-360-online/go-with-me/config"
+	"github.com/devops-360-online/go-with-me/internal/handlers"
+	"github.com/devops-360-online/go-with-me/internal/middlewares"
+	"github.com/devops-360-online/go-with-me/internal/models"
+	"github.com/devops-360-online/go-with-me/internal/repositories"
+	"github.com/devops-360-online/go-with-me/internal/tracing"
+	"github.com/devops-360-online/go-with-me/internal/websockets"
+	//"gorm.io/gorm"
 )
 
 func main() {
-    cfg := config.LoadConfig()
-    router := gin.Default()
+	cfg := config.LoadConfig()
+	router := gin.Default()
 
-    // Apply middlewares
-    router.Use(gin.Logger())
-    router.Use(gin.Recovery())
+	// Apply middlewares
+	router.Use(gin.Logger())
+	router.Use(gin.Recovery())
 
-    // Store cfg in context
-    router.Use(func(c *gin.Context) {
-        c.Set("config", cfg)
-        c.Next()
-    })
+	// Store cfg in context
+	router.Use(func(c *gin.Context) {
+		c.Set("config", cfg)
+		c.Next()
+	})
 
-    // Initialize database
-    db, err := repositories.NewDatabase(cfg)
-    if err != nil {
-        log.Fatalf("Failed to connect to database: %v", err)
-    }
+	// Initialize the tracer
+	tp, err := tracing.InitTracer()
+	if err != nil {
+		log.Fatalf("failed to initialize tracer: %v", err)
+	}
+	// Ensure the tracer provider is shutdown gracefully
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Fatalf("failed to shutdown tracer provider: %v", err)
+		}
+	}()
 
-    // Migrate the schema
-    db.AutoMigrate(&models.User{}, &models.Event{})
+	// Apply Tracing Middleware
+	router.Use(middlewares.TracingMiddleware())
 
-    // Add db to context
-    router.Use(func(c *gin.Context) {
-        c.Set("db", db)
-        c.Next()
-    })
+	// Initialize database
+	db, err := repositories.NewDatabase(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
 
-    // Initialize authentication middleware
-    authMiddleware, err := middlewares.AuthMiddleware()
-    if err != nil {
-        log.Fatalf("JWT Error: %v", err)
-    }
+	// Migrate the schema
+	db.AutoMigrate(&models.User{}, &models.Event{})
 
-    // Public routes
-    router.POST("/register", handlers.RegisterHandler)
-    router.POST("/login", authMiddleware.LoginHandler)
+	// Add db to context
+	router.Use(func(c *gin.Context) {
+		c.Set("db", db)
+		c.Next()
+	})
 
-    // Protected routes
-    auth := router.Group("/")
-    auth.Use(authMiddleware.MiddlewareFunc())
-    {
-        auth.POST("/events", handlers.CreateEventHandler)
-        auth.GET("/events", handlers.ListEventsHandler)
-        auth.GET("/events/:id", handlers.GetEventHandler)
-        auth.POST("/events/:id/join", handlers.JoinEventHandler)
-        auth.DELETE("/events/:id/join", handlers.UnjoinEventHandler) 
-        auth.GET("/ws/events/:id", func(c *gin.Context) {
-            handlers.EventChatHandler(c)
-        })
-    }
+	// Initialize authentication middleware
+	authMiddleware, err := middlewares.AuthMiddleware()
+	if err != nil {
+		log.Fatalf("JWT Error: %v", err)
+	}
 
-    // Initialize Redis client
-    rdb := repositories.NewRedisClient(cfg)
-    router.Use(middlewares.CacheMiddleware(rdb))
+	// Public routes
+	router.POST("/register", handlers.RegisterHandler)
+	router.POST("/login", authMiddleware.LoginHandler)
 
-    // Initialize MongoDB client
-    mongoClient, err := repositories.NewMongoClient(cfg)
-    if err != nil {
-        log.Fatalf("Failed to connect to MongoDB: %v", err)
-    }
+	// Protected routes
+	auth := router.Group("/")
+	auth.Use(authMiddleware.MiddlewareFunc())
+	{
+		auth.POST("/events", handlers.CreateEventHandler)
+		auth.GET("/events", handlers.ListEventsHandler)
+		auth.GET("/events/:id", handlers.GetEventHandler)
+		auth.POST("/events/:id/join", handlers.JoinEventHandler)
+		auth.DELETE("/events/:id/join", handlers.UnjoinEventHandler)
+		auth.GET("/ws/events/:id", func(c *gin.Context) {
+			handlers.EventChatHandler(c)
+		})
+	}
 
-    // Add MongoDB client to context
-    router.Use(func(c *gin.Context) {
-        c.Set("mongoClient", mongoClient)
-        c.Next()
-    })
+	// Initialize Redis client
+	rdb := repositories.NewRedisClient(cfg)
+	router.Use(middlewares.CacheMiddleware(rdb))
 
-    // Start WebSocket hub
-    go websockets.RunHub(rdb)
+	// Initialize MongoDB client
+	mongoClient, err := repositories.NewMongoClient(cfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	}
 
-    // Start the server
-    if err := router.Run(":" + cfg.ServerPort); err != nil {
-        log.Fatalf("Failed to run server: %v", err)
-    }
+	// Add MongoDB client to context
+	router.Use(func(c *gin.Context) {
+		c.Set("mongoClient", mongoClient)
+		c.Next()
+	})
+
+	// Start WebSocket hub
+	go websockets.RunHub(rdb)
+
+	// Start the server
+	if err := router.Run(":" + cfg.ServerPort); err != nil {
+		log.Fatalf("Failed to run server: %v", err)
+	}
 }

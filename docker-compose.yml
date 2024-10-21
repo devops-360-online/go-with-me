@@ -4,11 +4,14 @@ services:
     build: .
     ports:
       - "8080:8080"
+    networks:
+      - default
     depends_on:
       - db
       - redis
       - kafka
       - mongo
+      - localstack
     environment:
       - MONGO_URI=mongodb://mongo:27017
       - MONGO_DATABASE=go_with_me_chat
@@ -22,6 +25,13 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - SERVER_PORT=8080
       - GIN_MODE=debug
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - S3_BUCKET_EVENTS=go-with-me-images-events
+      - S3_BUCKET_CHAT=go-with-me-images-chat-event
+      - DEFAULT_S3_REGION=us-east-1
+      - S3_ENDPOINT=http://localstack:4566
   
   db:
     image: postgres
@@ -84,7 +94,6 @@ services:
 
   mongo:
     image: mongo:latest
-    container_name: mongo
     ports:
       - "27017:27017"
     volumes:
@@ -98,7 +107,6 @@ services:
 
   localstack:
     image: localstack/localstack
-    container_name: localstack
     ports:
       - "4566:4566"   # Expose LocalStack endpoint for all services (including S3)
       - "4571:4571"
@@ -108,7 +116,26 @@ services:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
     command: >
-      /bin/sh -c "localstack start & awslocal s3 mb s3://go-with-me-images-events && awslocal s3 mb s3://go-with-me-images-chat-event && tail -f /dev/null"
+      /bin/sh -c "localstack start & awslocal s3api create-bucket --bucket go-with-me-images-events && awslocal s3api create-bucket --bucket  go-with-me-images-chat-event && tail -f /dev/null"
+
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"   # Zipkin UI port
+
+  # OpenTelemetry Collector service
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./opentelemetry/otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317"  # OpenTelemetry gRPC receiver
+      - "55681:55681"  # HTTP receiver (optional)
+    depends_on:
+      - zipkin
+    networks:
+      - default
 
 networks:
   default:

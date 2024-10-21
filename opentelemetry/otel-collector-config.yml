@@ -1,0 +1,21 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"   # Accept gRPC traffic on all network interfaces
+      http:
+        endpoint: "0.0.0.0:55681"  # (Optional) Accept HTTP traffic on all interfaces
+
+exporters:
+  zipkin:
+    endpoint: "http://zipkin:9411/api/v2/spans"  # Zipkin endpoint
+
+processors:
+  batch:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [zipkin]
