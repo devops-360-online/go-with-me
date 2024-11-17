@@ -32,6 +32,8 @@ COPY .env .
 
 COPY --from=builder /var/logs/app /var/logs/app
 
+USER 1000
+
 # Expose the application port (adjust if necessary)
 EXPOSE 8080
 
