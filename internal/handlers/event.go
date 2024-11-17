@@ -19,11 +19,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/devops-360-online/go-with-me/config"
+	"github.com/devops-360-online/go-with-me/internal/logger"
 	"github.com/devops-360-online/go-with-me/internal/middlewares"
 	"github.com/devops-360-online/go-with-me/internal/models"
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"gorm.io/gorm"
 )
 
@@ -75,9 +77,9 @@ func GetEventHandler(c *gin.Context) {
 
 // UploadFileToS3 uploads a file to S3 (or LocalStack in your case)
 func UploadFileToS3(ctx context.Context, cfg *config.Config, file multipart.File, fileHeader *multipart.FileHeader, eventID uint, eventName string) (string, error) {
-	tracer := otel.Tracer("event-service") // Get the tracer
+	tracer := otel.Tracer("event-service")           // Get the tracer
 	ctx, span := tracer.Start(ctx, "UploadFileToS3") // Start a new span for the S3 upload process
-	defer span.End() // End the span when the function completes
+	defer span.End()                                 // End the span when the function completes
 
 	// Log the event and file details for tracing
 	span.SetAttributes(
@@ -156,90 +158,101 @@ func UploadFileToS3(ctx context.Context, cfg *config.Config, file multipart.File
 }
 
 func CreateEventHandler(c *gin.Context) {
-    tracer := otel.Tracer("event-service") // Get the tracer
-    ctx, span := tracer.Start(c.Request.Context(), "CreateEventHandler")
-    defer span.End() // End the span when the function completes
+	tracer := otel.Tracer("event-service") // Get the tracer
+	ctx, span := tracer.Start(c.Request.Context(), "CreateEventHandler")
+	defer span.End() // End the span when the function completes
 
-    // Extract the form fields
-    event := models.Event{
-        Name:        c.PostForm("name"),
-        Location:    c.PostForm("location"),
-        Description: c.PostForm("description"),
-    }
+	// Extract the form fields
+	event := models.Event{
+		Name:        c.PostForm("name"),
+		Location:    c.PostForm("location"),
+		Description: c.PostForm("description"),
+	}
 
-    // Parse the date field (check for empty and handle date-only formats)
-    dateStr := c.PostForm("date")
-    if dateStr == "" {
-        span.RecordError(fmt.Errorf("Date field cannot be empty"))
-        c.JSON(http.StatusBadRequest, gin.H{"error": "Date field cannot be empty"})
-        return
-    }
+	traceID := span.SpanContext().TraceID().String()
+	_, formEventSpan := tracer.Start(ctx, "FormEVENT")
 
-    // Try to parse the full RFC3339 format first, fallback to date-only format
-    eventDate, err := time.Parse(time.RFC3339, dateStr)
-    if err != nil {
-        // Fallback to parsing just the date (YYYY-MM-DD)
-        eventDate, err = time.Parse("2006-01-02", dateStr)
-        if err != nil {
-            span.RecordError(err) // Trace the error
-            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format. Expected formats: YYYY-MM-DD or RFC3339"})
-            return
-        }
-    }
-    event.Date = eventDate
+	// Parse the date field (check for empty and handle date-only formats)
+	dateStr := c.PostForm("date")
+	if dateStr == "" {
+		formEventSpan.SetStatus(codes.Error, "Date field cannot be empty")
+		formEventSpan.SetAttributes(
+			attribute.String("error.message", "Date field cannot be empty"),
+		)
+		formEventSpan.End()
 
-    // Extract user ID from JWT claims
-    claims := jwt.ExtractClaims(c)
-    userID := uint(claims[middlewares.IdentityKey].(float64))
-    event.CreatorID = userID
-    event.CreatedAt = time.Now()
-    event.UpdatedAt = time.Now()
+		logger.LogMessage("error", "Date field cannot be empty", traceID, map[string]interface{}{
+			"error": "Date field cannot be empty",
+		})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Date field cannot be empty"})
+		return
+	}
 
-    // Handle the file upload
-    file, fileHeader, err := c.Request.FormFile("file")
-    if err != nil && err != http.ErrMissingFile {
-        span.RecordError(err) // Trace the error
-        c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to retrieve file: " + err.Error()})
-        return
-    }
+	// Try to parse the full RFC3339 format first, fallback to date-only format
+	eventDate, err := time.Parse(time.RFC3339, dateStr)
+	if err != nil {
+		// Fallback to parsing just the date (YYYY-MM-DD)
+		eventDate, err = time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			span.RecordError(err) // Trace the error
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format. Expected formats: YYYY-MM-DD or RFC3339"})
+			return
+		}
+	}
+	event.Date = eventDate
 
-    // If a file is uploaded, process it (e.g., upload it to S3)
-    if file != nil {
-        cfg := c.MustGet("config").(*config.Config)
-        fileURL, err := UploadFileToS3(ctx, cfg, file, fileHeader, event.ID, event.Name) // Pass context for tracing
-        if err != nil {
-            span.RecordError(err) // Trace the error
-            c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to S3: " + err.Error()})
-            return
-        }
-        event.FileURL = fileURL
-        // Add file-related attributes to the trace
-        span.SetAttributes(
-            attribute.String("file.name", fileHeader.Filename),
-            attribute.String("file.url", fileURL),
-        )
-    }
+	// Extract user ID from JWT claims
+	claims := jwt.ExtractClaims(c)
+	userID := uint(claims[middlewares.IdentityKey].(float64))
+	event.CreatorID = userID
+	event.CreatedAt = time.Now()
+	event.UpdatedAt = time.Now()
 
-    // Trace the database operation of saving the event
-    db := c.MustGet("db").(*gorm.DB)
-    _, dbSpan := tracer.Start(ctx, "DB_SaveEvent") // Start a span for the DB operation
-    if err := db.Create(&event).Error; err != nil {
-        dbSpan.RecordError(err) // Trace the error
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create event"})
-        dbSpan.End() // End the DB span
-        return
-    }
-    dbSpan.End() // End the DB span
+	// Handle the file upload
+	file, fileHeader, err := c.Request.FormFile("file")
+	if err != nil && err != http.ErrMissingFile {
+		span.RecordError(err) // Trace the error
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to retrieve file: " + err.Error()})
+		return
+	}
 
-    // Add event-related attributes to the span
-    span.SetAttributes(
-        attribute.String("event.name", event.Name),
-        attribute.Int("event.id", int(event.ID)),
-        attribute.String("event.location", event.Location),
-    )
+	// If a file is uploaded, process it (e.g., upload it to S3)
+	if file != nil {
+		cfg := c.MustGet("config").(*config.Config)
+		fileURL, err := UploadFileToS3(ctx, cfg, file, fileHeader, event.ID, event.Name) // Pass context for tracing
+		if err != nil {
+			span.RecordError(err) // Trace the error
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload file to S3: " + err.Error()})
+			return
+		}
+		event.FileURL = fileURL
+		// Add file-related attributes to the trace
+		span.SetAttributes(
+			attribute.String("file.name", fileHeader.Filename),
+			attribute.String("file.url", fileURL),
+		)
+	}
 
-    // Respond with the created event
-    c.JSON(http.StatusCreated, event)
+	// Trace the database operation of saving the event
+	db := c.MustGet("db").(*gorm.DB)
+	_, dbSpan := tracer.Start(ctx, "DB_SaveEvent") // Start a span for the DB operation
+	if err := db.Create(&event).Error; err != nil {
+		dbSpan.RecordError(err) // Trace the error
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create event"})
+		dbSpan.End() // End the DB span
+		return
+	}
+	dbSpan.End() // End the DB span
+
+	// Add event-related attributes to the span
+	span.SetAttributes(
+		attribute.String("event.name", event.Name),
+		attribute.Int("event.id", int(event.ID)),
+		attribute.String("event.location", event.Location),
+	)
+
+	// Respond with the created event
+	c.JSON(http.StatusCreated, event)
 }
 
 func JoinEventHandler(c *gin.Context) {

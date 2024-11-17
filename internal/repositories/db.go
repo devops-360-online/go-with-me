@@ -15,7 +15,7 @@ func NewDatabase(cfg *config.Config) (*gorm.DB, error) {
 		cfg.DBHost,
 		cfg.DBUser,
 		cfg.DBPassword,
-		cfg.DBUser,
+		cfg.DBName,
 		cfg.DBPort,
 	)
 

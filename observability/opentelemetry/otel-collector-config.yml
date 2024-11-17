@@ -7,8 +7,10 @@ receivers:
         endpoint: "0.0.0.0:55681"  # (Optional) Accept HTTP traffic on all interfaces
 
 exporters:
-  zipkin:
-    endpoint: "http://zipkin:9411/api/v2/spans"  # Zipkin endpoint
+  otlp:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true  # Move 'insecure' under 'tls'
 
 processors:
   batch:
@@ -18,4 +20,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [zipkin]
+      exporters: [otlp]

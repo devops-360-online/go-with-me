@@ -23,7 +23,7 @@ type Config struct {
 	S3BucketNameChatEvent    string
 	S3Region                 string
 	OtelExporterOTLPEndpoint string
-	S3Endpoint              string
+	S3Endpoint               string
 	// Add other configurations as needed
 }
 
@@ -50,9 +50,9 @@ func LoadConfig() *Config {
 		S3BucketNameEvents:       viper.GetString("S3_BUCKET_EVENTS"),
 		S3BucketNameChatEvent:    viper.GetString("S3_BUCKET_CHAT"),
 		S3Region:                 viper.GetString("DEFAULT_S3_REGION"),
-		S3Endpoint:              viper.GetString("S3_ENDPOINT"),
+		S3Endpoint:               viper.GetString("S3_ENDPOINT"),
 		OtelExporterOTLPEndpoint: viper.GetString("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		        // Add other configurations as needed
+		// Add other configurations as needed
 	}
 
 	return config

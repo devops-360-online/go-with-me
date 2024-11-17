@@ -13,11 +13,13 @@ RUN go mod download
 # Copy the rest of the application's source code
 COPY . .
 
+RUN mkdir -p /var/logs/app
+
 # Build the Go application
 RUN go build -o go_with_me cmd/main.go
 
 # Stage 2: Run the application
-FROM alpine:latest
+FROM scratch
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -27,6 +29,8 @@ COPY --from=builder /app/go_with_me .
 
 # Copy any necessary configuration files
 COPY .env .
+
+COPY --from=builder /var/logs/app /var/logs/app
 
 # Expose the application port (adjust if necessary)
 EXPOSE 8080

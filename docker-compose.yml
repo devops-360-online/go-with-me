@@ -4,19 +4,26 @@ services:
     build: .
     ports:
       - "8080:8080"
+    volumes:
+     - ./logs/app:/var/log/app
     networks:
       - default
     depends_on:
-      - db
-      - redis
-      - kafka
-      - mongo
-      - localstack
+      db:
+          condition: service_healthy
+      redis:
+          condition: service_healthy
+      kafka:
+          condition: service_healthy
+      mongo:
+          condition: service_healthy
+      localstack:
+          condition: service_healthy
     environment:
       - MONGO_URI=mongodb://mongo:27017
       - MONGO_DATABASE=go_with_me_chat
       - DB_NAME=go_with_me
-      - DB_USER=root
+      - DB_USER=postgres
       - DB_PASSWORD=postgres
       - DB_HOST=db
       - DB_PORT=5432
@@ -58,6 +65,10 @@ services:
     image: redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 30s
+      timeout: 30s
 
   kafka:
     image: confluentinc/cp-kafka:7.7.1
@@ -75,8 +86,16 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       CLUSTER_ID: 'q1Sh-9_ISia_zwGINzRvyQ'
+      KAFKA_LOG_DIRS: /var/log/kafka
+    volumes:
+      - ./logs/kafka:/var/log/kafka
+      - ./config/kafka/log4j.properties:/etc/kafka/log4j.properties
     depends_on:
       - controller
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:9092", "--list"]
+      interval: 30s
+      timeout: 30s
 
   controller:
     image: confluentinc/cp-kafka:7.7.1
@@ -98,8 +117,10 @@ services:
       - "27017:27017"
     volumes:
       - ./data/mongo:/data/db
+      - ./logs/mongodb:/var/log/mongodb
+    command: ["mongod", "--logpath", "/var/log/mongodb/mongodb.log", "--logappend"]
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: ["CMD","mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 1m30s
       timeout: 30s
       retries: 5
@@ -112,28 +133,69 @@ services:
       - "4571:4571"
     environment:
       - SERVICES=s3    # Activate S3 service
-      - DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localstack:4566/_localstack/health"]
+      interval: 1m30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
     command: >
       /bin/sh -c "localstack start & awslocal s3api create-bucket --bucket go-with-me-images-events && awslocal s3api create-bucket --bucket  go-with-me-images-chat-event && tail -f /dev/null"
 
-  zipkin:
-    image: openzipkin/zipkin
+  # Tempo service
+  tempo:
+    image: grafana/tempo:latest
     ports:
-      - "9411:9411"   # Zipkin UI port
+      - "3200:3200"
+    volumes:
+      - ./observability/tempo/tempo-config.yaml:/etc/tempo/tempo.yaml
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+
+  # Loki service
+  loki:
+    image: grafana/loki:3.2.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/local-config.yaml  
+  
+  # Grafana service
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
 
   # OpenTelemetry Collector service
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector:latest
     command: ["--config=/etc/otel-collector-config.yml"]
     volumes:
-      - ./opentelemetry/otel-collector-config.yml:/etc/otel-collector-config.yml
+      - ./observability/opentelemetry/otel-collector-config.yml:/etc/otel-collector-config.yml
     ports:
       - "4317:4317"  # OpenTelemetry gRPC receiver
       - "55681:55681"  # HTTP receiver (optional)
     depends_on:
-      - zipkin
+      - tempo
+    networks:
+      - default
+
+  fluent-bit:
+    image: fluent/fluent-bit:3.2.0
+    volumes:
+      - ./observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./observability/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf
+      - ./logs/app:/var/log/app
+      - ./logs/mongodb:/var/log/mongodb
+      - ./logs/kafka:/var/log/kafka
+    depends_on:
+      - loki
     networks:
       - default
 

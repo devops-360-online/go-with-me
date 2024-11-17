@@ -27,7 +27,7 @@ func InitTracer() (*trace.TracerProvider, error) {
 		trace.WithBatcher(exporter),
 		trace.WithResource(resource.NewWithAttributes(
 			semconv.SchemaURL,
-			semconv.ServiceNameKey.String("event-service"),        // Name of your service
+			semconv.ServiceNameKey.String("event-service"),            // Name of your service
 			semconv.ServiceVersionKey.String("v1.0.0"),            // Version of the service
 			semconv.DeploymentEnvironmentKey.String("production"), // Environment
 		)),
@@ -36,4 +36,11 @@ func InitTracer() (*trace.TracerProvider, error) {
 	// Set the global tracer provider
 	otel.SetTracerProvider(tp)
 	return tp, nil
+}
+
+// ShutdownTracer gracefully shuts down the TracerProvider, flushing any remaining spans.
+func ShutdownTracer(tp *trace.TracerProvider) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return tp.Shutdown(ctx)
 }

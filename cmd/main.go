@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 	//jwt "github.com/appleboy/gin-jwt/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/devops-360-online/go-with-me/internal/repositories"
 	"github.com/devops-360-online/go-with-me/internal/tracing"
 	"github.com/devops-360-online/go-with-me/internal/websockets"
+	"github.com/devops-360-online/go-with-me/internal/logger"
 	//"gorm.io/gorm"
 )
 
@@ -30,15 +32,22 @@ func main() {
 		c.Next()
 	})
 
+	// Initialize the logger
+    if err := logger.InitLogger(); err != nil {
+        log.Fatalf("Could not initialize logger: %v", err)
+    }
+    defer logger.CloseLogger()
+
 	// Initialize the tracer
 	tp, err := tracing.InitTracer()
 	if err != nil {
-		log.Fatalf("failed to initialize tracer: %v", err)
+        logger.LogMessage("fatal", fmt.Sprintf("Failed to initialize tracer: %v", err), "", nil)
 	}
 	// Ensure the tracer provider is shutdown gracefully
 	defer func() {
 		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Fatalf("failed to shutdown tracer provider: %v", err)
+			logger.LogMessage("fatal", fmt.Sprintf("Failed to shutdown tracer provider: %v", err), "", nil)
+
 		}
 	}()
 
@@ -48,7 +57,7 @@ func main() {
 	// Initialize database
 	db, err := repositories.NewDatabase(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		logger.LogMessage("fatal", fmt.Sprintf("Failed to connect to database: %v", err), "", nil)
 	}
 
 	// Migrate the schema
@@ -63,7 +72,7 @@ func main() {
 	// Initialize authentication middleware
 	authMiddleware, err := middlewares.AuthMiddleware()
 	if err != nil {
-		log.Fatalf("JWT Error: %v", err)
+		logger.LogMessage("fatal", fmt.Sprintf("JWT Error: %v", err), "", nil)
 	}
 
 	// Public routes
@@ -91,7 +100,7 @@ func main() {
 	// Initialize MongoDB client
 	mongoClient, err := repositories.NewMongoClient(cfg)
 	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+		logger.LogMessage("fatal", fmt.Sprintf("Failed to connect to MongoDB: %v", err), "", nil)
 	}
 
 	// Add MongoDB client to context
@@ -106,5 +115,6 @@ func main() {
 	// Start the server
 	if err := router.Run(":" + cfg.ServerPort); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
+		logger.LogMessage("fatal", fmt.Sprintf("Failed to run server: %v", err), "", nil)
 	}
 }
